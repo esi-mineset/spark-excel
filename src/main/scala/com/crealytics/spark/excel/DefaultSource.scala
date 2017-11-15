@@ -33,7 +33,8 @@ class DefaultSource extends RelationProvider with SchemaRelationProvider with Cr
       endColumn = parameters.get("endColumn").fold(Int.MaxValue)(_.toInt),
       timestampFormat = parameters.get("timestampFormat"),
       maxRowsInMemory = parameters.get("maxRowsInMemory").map(_.toInt),
-      excerptSize = parameters.get("excerptSize").fold(10)(_.toInt)
+      excerptSize = parameters.get("excerptSize").fold(10)(_.toInt),
+      endRow = parameters.get("endRow").map(_.toInt)
     )(sqlContext)
   }
 
