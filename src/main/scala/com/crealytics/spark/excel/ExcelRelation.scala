@@ -42,13 +42,15 @@ case class ExcelRelation(
     extends BaseRelation
     with TableScan
     with PrunedScan {
+
   private val path = new Path(location)
+
   def extractCells(row: org.apache.poi.ss.usermodel.Row): Vector[Option[Cell]] =
     row.eachCellIterator(startColumn, endColumn).to[Vector]
 
-  private def sheet = {
+  private def openWorkbook(): Workbook = {
     val inputStream = FileSystem.get(path.toUri, sqlContext.sparkContext.hadoopConfiguration).open(path)
-    val workbook = maxRowsInMemory
+    maxRowsInMemory
       .map { maxRowsInMem =>
         StreamingReader
           .builder()
@@ -57,16 +59,18 @@ case class ExcelRelation(
           .open(inputStream)
       }
       .getOrElse(WorkbookFactory.create(inputStream))
-    findSheet(workbook, sheetName)
   }
 
-  private lazy val (firstRowWithData, excerpt) = {
+  private def getExcerpt(): (SheetRow, List[SheetRow]) = {
+    val workbook = openWorkbook()
+    val sheet = findSheet(workbook, sheetName)
     val sheetIterator = sheet.iterator.asScala
     var currentRow: org.apache.poi.ss.usermodel.Row = null
     while (sheetIterator.hasNext && currentRow == null) {
       currentRow = sheetIterator.next
     }
     if (currentRow == null) {
+      workbook.close()
       throw new RuntimeException(s"Sheet $sheetName in $path doesn't seem to contain any data")
     }
     val firstRow = currentRow
@@ -76,20 +80,24 @@ case class ExcelRelation(
       excerpt(counter) = sheetIterator.next
       counter += 1
     }
+    workbook.close()
     (firstRow, excerpt.take(counter).to[List])
   }
 
-  private def restIterator = {
+  private def restIterator(wb: Workbook, excerptSize: Int) = {
+    val sheet = findSheet(wb, sheetName)
     val i = sheet.iterator.asScala
-    i.drop(excerpt.size + 1)
+    i.drop(excerptSize + 1)
     i
   }
-  private def dataIterator = {
+
+  private def dataIterator(workbook: Workbook, firstRowWithData: SheetRow, excerpt: List[SheetRow]) = {
     val init = if (useHeader) excerpt else firstRowWithData :: excerpt
-    init.iterator ++ restIterator
+    init.iterator ++ restIterator(workbook, excerpt.size)
   }
 
   override val schema: StructType = inferSchema
+
   val dataFormatter = new DataFormatter()
 
   val timestampParser = if (timestampFormat.isDefined) {
@@ -105,6 +113,7 @@ case class ExcelRelation(
       }
       .getOrElse(workBook.sheetIterator.next)
   }
+
   override def buildScan: RDD[Row] = buildScan(schema.map(_.name).toArray)
 
   override def buildScan(requiredColumns: Array[String]): RDD[Row] = {
@@ -133,13 +142,21 @@ case class ExcelRelation(
         }
       }
       .to[Vector]
-    val iterator = endRow match {
-      case Some(er) => dataIterator.take(er)
-      case None => dataIterator
+
+    val (firstRowWithData, excerpt) = getExcerpt()
+    val workbook = openWorkbook()
+
+    val i1 = dataIterator(workbook, firstRowWithData, excerpt)
+    val i2 = endRow match {
+      case Some(er) => i1.take(er)
+      case None => i1
     }
-    val rows = iterator.map(row => lookups.map(l => l(row)))
+    val rows = i2.map(row => lookups.map(l => l(row)))
+
     val result = rows.to[Vector]
-    sqlContext.sparkContext.parallelize(result.map(Row.fromSeq))
+    val rdd = sqlContext.sparkContext.parallelize(result.map(Row.fromSeq))
+    workbook.close()
+    rdd
   }
 
   private def stringToDouble(value: String): Double = {
@@ -156,11 +173,25 @@ case class ExcelRelation(
     }
 
     val dataFormatter = new DataFormatter()
-    lazy val stringValue = dataFormatter.formatCellValue(cell)
+    lazy val stringValue =
+      cell.getCellTypeEnum match {
+        case CellType.FORMULA =>
+          cell.getCachedFormulaResultTypeEnum match {
+            case CellType.STRING => cell.getRichStringCellValue.getString
+            case CellType.NUMERIC => cell.getNumericCellValue.toString
+            case _ => dataFormatter.formatCellValue(cell)
+          }
+        case _ => dataFormatter.formatCellValue(cell)
+      }
     lazy val numericValue =
       cell.getCellTypeEnum match {
         case CellType.NUMERIC => cell.getNumericCellValue
         case CellType.STRING => stringToDouble(cell.getStringCellValue)
+        case CellType.FORMULA =>
+          cell.getCachedFormulaResultTypeEnum match {
+            case CellType.NUMERIC => cell.getNumericCellValue
+            case CellType.STRING => stringToDouble(cell.getRichStringCellValue.getString)
+          }
       }
     lazy val bigDecimal = new BigDecimal(numericValue)
     castType match {
@@ -194,6 +225,12 @@ case class ExcelRelation(
     cell match {
       case Some(c) =>
         c.getCellTypeEnum match {
+          case CellType.FORMULA =>
+            c.getCachedFormulaResultTypeEnum match {
+              case CellType.STRING => StringType
+              case CellType.NUMERIC => DoubleType
+              case _ => NullType
+            }
           case CellType.STRING if c.getStringCellValue == "" => NullType
           case CellType.STRING => StringType
           case CellType.BOOLEAN => BooleanType
@@ -205,29 +242,30 @@ case class ExcelRelation(
   }
 
   private def parallelize[T : scala.reflect.ClassTag](seq: Seq[T]): RDD[T] = sqlContext.sparkContext.parallelize(seq)
-  private def inferSchema: StructType =
-    this.userSchema.getOrElse {
-      val header = extractCells(firstRowWithData).zipWithIndex.map {
-        case (Some(value), _) if useHeader => value.getStringCellValue
-        case (_, index) => s"C$index"
-      }
-      val baseSchema = if (this.inferSheetSchema) {
-        val stringsAndCellTypes = excerpt
-          .map(r => extractCells(r).map(getSparkType))
-        InferSchema(parallelize(stringsAndCellTypes), header.toArray)
-      } else {
-        // By default fields are assumed to be StringType
-        val schemaFields = header.map { fieldName =>
-          StructField(fieldName.toString, StringType, nullable = true)
-        }
-        StructType(schemaFields)
-      }
-      if (addColorColumns) {
-        header.foldLeft(baseSchema) { (schema, header) =>
-          schema.add(s"${header}_color", StringType, nullable = true)
-        }
-      } else {
-        baseSchema
-      }
+
+  private def inferSchema(): StructType = this.userSchema.getOrElse {
+    val (firstRowWithData, excerpt) = getExcerpt()
+    val header = extractCells(firstRowWithData).zipWithIndex.map {
+      case (Some(value), _) if useHeader => value.getStringCellValue
+      case (_, index) => s"C$index"
     }
+    val baseSchema = if (this.inferSheetSchema) {
+      val stringsAndCellTypes = excerpt
+        .map(r => extractCells(r).map(getSparkType))
+      InferSchema(parallelize(stringsAndCellTypes), header.toArray)
+    } else {
+      // By default fields are assumed to be StringType
+      val schemaFields = header.map { fieldName =>
+        StructField(fieldName.toString, StringType, nullable = true)
+      }
+      StructType(schemaFields)
+    }
+    if (addColorColumns) {
+      header.foldLeft(baseSchema) { (schema, header) =>
+        schema.add(s"${header}_color", StringType, nullable = true)
+      }
+    } else {
+      baseSchema
+    }
+  }
 }
