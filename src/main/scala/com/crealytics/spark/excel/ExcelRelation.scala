@@ -36,7 +36,8 @@ case class ExcelRelation(
   endColumn: Int = Int.MaxValue,
   timestampFormat: Option[String] = None,
   maxRowsInMemory: Option[Int] = None,
-  excerptSize: Int = 10
+  excerptSize: Int = 10,
+  endRow: Option[Int] = None
 )(@transient val sqlContext: SQLContext)
     extends BaseRelation
     with TableScan
@@ -141,9 +142,17 @@ case class ExcelRelation(
         }
       }
       .to[Vector]
+
     val (firstRowWithData, excerpt) = getExcerpt()
     val workbook = openWorkbook()
-    val rows = dataIterator(workbook, firstRowWithData, excerpt).map(row => lookups.map(l => l(row)))
+
+    val i1 = dataIterator(workbook, firstRowWithData, excerpt)
+    val i2 = endRow match {
+      case Some(er) => i1.take(er)
+      case None => i1
+    }
+    val rows = i2.map(row => lookups.map(l => l(row)))
+
     val result = rows.to[Vector]
     val rdd = sqlContext.sparkContext.parallelize(result.map(Row.fromSeq))
     workbook.close()
