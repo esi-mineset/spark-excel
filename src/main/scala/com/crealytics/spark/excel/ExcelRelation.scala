@@ -39,9 +39,9 @@ case class ExcelRelation(
   excerptSize: Int = 10,
   endRow: Option[Int] = None
 )(@transient val sqlContext: SQLContext)
-    extends BaseRelation
-    with TableScan
-    with PrunedScan {
+  extends BaseRelation
+  with TableScan
+  with PrunedScan {
 
   private val path = new Path(location)
 
@@ -159,10 +159,10 @@ case class ExcelRelation(
     rdd
   }
 
-  private def stringToDouble(value: String): Double = {
+  private def stringToDouble(value: String): Option[Double] = {
     Try(value.toDouble) match {
-      case Success(d) => d
-      case Failure(_) => Double.NaN
+      case Success(d) => Some(d)
+      case Failure(_) => None // Double.NaN
     }
   }
 
@@ -172,52 +172,76 @@ case class ExcelRelation(
       return null
     }
 
-    lazy val dataFormatter = new DataFormatter()
-    lazy val stringValue =
-      cell.getCellTypeEnum match {
-        case CellType.FORMULA =>
-          cell.getCachedFormulaResultTypeEnum match {
-            case CellType.STRING => cell.getRichStringCellValue.getString
-            case CellType.NUMERIC => cell.getNumericCellValue.toString
-            case _ => dataFormatter.formatCellValue(cell)
-          }
-        case _ => dataFormatter.formatCellValue(cell)
-      }
-    lazy val numericValue =
-      cell.getCellTypeEnum match {
-        case CellType.NUMERIC => cell.getNumericCellValue
-        case CellType.STRING => stringToDouble(cell.getStringCellValue)
-        case CellType.FORMULA =>
-          cell.getCachedFormulaResultTypeEnum match {
-            case CellType.NUMERIC => cell.getNumericCellValue
-            case CellType.STRING => stringToDouble(cell.getRichStringCellValue.getString)
-          }
-      }
-    lazy val bigDecimal = new BigDecimal(numericValue)
+    lazy val stringValue = getStringValue(cell)
+
+    lazy val numericValue = getNumericValue(cell)
+
     castType match {
-      case _: ByteType => numericValue.toByte
-      case _: ShortType => numericValue.toShort
-      case _: IntegerType => numericValue.toInt
-      case _: LongType => numericValue.toLong
-      case _: FloatType => numericValue.toFloat
-      case _: DoubleType => numericValue
+      case _: ByteType => if (numericValue.isDefined) numericValue.get.toByte else null
+      case _: ShortType => if (numericValue.isDefined) numericValue.get.toShort else null
+      case _: IntegerType => if (numericValue.isDefined) numericValue.get.toInt else null
+      case _: LongType => if (numericValue.isDefined) numericValue.get.toLong else null
+      case _: FloatType => if (numericValue.isDefined) numericValue.get.toFloat else null
+      case _: DoubleType => if (numericValue.isDefined) numericValue else null
       case _: BooleanType => cell.getBooleanCellValue
-      case _: DecimalType => if (cellType == CellType.STRING && cell.getStringCellValue == "") null else bigDecimal
+      case _: DecimalType =>
+        if (cellType == CellType.STRING && cell.getStringCellValue == "") {
+          null
+        } else {
+          if (numericValue.isDefined) new BigDecimal(numericValue.get) else null
+        }
       case _: TimestampType =>
         cellType match {
-          case CellType.NUMERIC => new Timestamp(DateUtil.getJavaDate(numericValue).getTime)
+          case CellType.NUMERIC =>
+            if (numericValue.isDefined) {
+              new Timestamp(DateUtil.getJavaDate(numericValue.get).getTime)
+            } else {
+              null
+            }
           case _ => parseTimestamp(stringValue)
         }
-      case _: DateType => new java.sql.Date(DateUtil.getJavaDate(numericValue).getTime)
+      case _: DateType =>
+        if (numericValue.isDefined) {
+          new java.sql.Date(DateUtil.getJavaDate(numericValue.get).getTime)
+        } else {
+          null
+        }
       case _: StringType => stringValue
       case t => throw new RuntimeException(s"Unsupported cast from $cell to $t")
     }
   }
 
-  private def parseTimestamp(stringValue: String): Timestamp = {
-    timestampParser match {
+  private def getStringValue(cell: Cell) = {
+    cell.getCellTypeEnum match {
+      case CellType.FORMULA =>
+        cell.getCachedFormulaResultTypeEnum match {
+          case CellType.STRING => cell.getRichStringCellValue.getString
+          case CellType.NUMERIC => cell.getNumericCellValue.toString
+          case _ => dataFormatter.formatCellValue(cell)
+        }
+      case _ => dataFormatter.formatCellValue(cell)
+    }
+  }
+
+  private def getNumericValue(cell: Cell): Option[Double] = {
+    cell.getCellTypeEnum match {
+      case CellType.NUMERIC => Some(cell.getNumericCellValue)
+      case CellType.STRING => stringToDouble(cell.getStringCellValue)
+      case CellType.FORMULA =>
+        cell.getCachedFormulaResultTypeEnum match {
+          case CellType.NUMERIC => Some(cell.getNumericCellValue)
+          case CellType.STRING => stringToDouble(cell.getRichStringCellValue.getString)
+        }
+    }
+  }
+
+  private def parseTimestamp(stringValue: String): Option[Timestamp] = {
+    Try(timestampParser match {
       case Some(parser) => new Timestamp(parser.parse(stringValue).getTime)
       case None => Timestamp.valueOf(stringValue)
+    }) match {
+      case Success(ts) => Some(ts)
+      case Failure(_) => None
     }
   }
 
@@ -244,8 +268,8 @@ case class ExcelRelation(
   private def parallelize[T : scala.reflect.ClassTag](seq: Seq[T]): RDD[T] = sqlContext.sparkContext.parallelize(seq)
 
   /**
-    * Generates a header from the given row which is null-safe and duplicate-safe.
-    */
+   * Generates a header from the given row which is null-safe and duplicate-safe.
+   */
   protected def makeSafeHeader(row: Array[String]): Array[String] = {
     if (useHeader) {
       val duplicates = {
