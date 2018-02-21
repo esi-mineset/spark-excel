@@ -36,13 +36,19 @@ case class ExcelRelation(
   endColumn: Int = Int.MaxValue,
   timestampFormat: Option[String] = None,
   maxRowsInMemory: Option[Int] = None,
-  excerptSize: Int = 10
+  excerptSize: Int = 10,
+  nullValues: Option[String] = None
 )(@transient val sqlContext: SQLContext)
     extends BaseRelation
     with TableScan
     with PrunedScan {
 
   private val path = new Path(location)
+
+  private val nulls: Option[Set[String]] = nullValues match {
+    case Some(vals) => Some(vals.split(',').toSet)
+    case None => None
+  }
 
   def extractCells(row: org.apache.poi.ss.usermodel.Row): Vector[Option[Cell]] =
     row.eachCellIterator(startColumn, endColumn).to[Vector]
@@ -96,8 +102,6 @@ case class ExcelRelation(
   }
 
   override val schema: StructType = inferSchema
-
-  val dataFormatter = new DataFormatter()
 
   val timestampParser = if (timestampFormat.isDefined) {
     Some(new SimpleDateFormat(timestampFormat.get))
@@ -163,7 +167,46 @@ case class ExcelRelation(
       return null
     }
 
-    lazy val dataFormatter = new DataFormatter()
+    lazy val stringValue = getStringValue(cell)
+
+    if (nulls.isDefined && nulls.get.contains(stringValue)) {
+      null
+    } else {
+      lazy val numericValue =
+        cell.getCellTypeEnum match {
+          case CellType.NUMERIC => cell.getNumericCellValue
+          case CellType.STRING => stringToDouble(cell.getStringCellValue)
+          case CellType.FORMULA =>
+            cell.getCachedFormulaResultTypeEnum match {
+              case CellType.NUMERIC => cell.getNumericCellValue
+              case CellType.STRING => stringToDouble(cell.getRichStringCellValue.getString)
+            }
+        }
+      lazy val bigDecimal = new BigDecimal(numericValue)
+      castType match {
+        case _: ByteType => numericValue.toByte
+        case _: ShortType => numericValue.toShort
+        case _: IntegerType => numericValue.toInt
+        case _: LongType => numericValue.toLong
+        case _: FloatType => numericValue.toFloat
+        case _: DoubleType => numericValue
+        case _: BooleanType => cell.getBooleanCellValue
+        case _: DecimalType => if (cellType == CellType.STRING && cell.getStringCellValue == "") null else bigDecimal
+        case _: TimestampType =>
+          cellType match {
+            case CellType.NUMERIC => new Timestamp(DateUtil.getJavaDate(numericValue).getTime)
+            case _ => parseTimestamp(stringValue)
+          }
+        case _: DateType => new java.sql.Date(DateUtil.getJavaDate(numericValue).getTime)
+        case _: StringType => stringValue
+        case t => throw new RuntimeException(s"Unsupported cast from $cell to $t")
+      }
+    }
+  }
+
+  private lazy val dataFormatter = new DataFormatter()
+
+  private def getStringValue(cell: Cell) = {
     lazy val stringValue =
       cell.getCellTypeEnum match {
         case CellType.FORMULA =>
@@ -174,35 +217,7 @@ case class ExcelRelation(
           }
         case _ => dataFormatter.formatCellValue(cell)
       }
-    lazy val numericValue =
-      cell.getCellTypeEnum match {
-        case CellType.NUMERIC => cell.getNumericCellValue
-        case CellType.STRING => stringToDouble(cell.getStringCellValue)
-        case CellType.FORMULA =>
-          cell.getCachedFormulaResultTypeEnum match {
-            case CellType.NUMERIC => cell.getNumericCellValue
-            case CellType.STRING => stringToDouble(cell.getRichStringCellValue.getString)
-          }
-      }
-    lazy val bigDecimal = new BigDecimal(numericValue)
-    castType match {
-      case _: ByteType => numericValue.toByte
-      case _: ShortType => numericValue.toShort
-      case _: IntegerType => numericValue.toInt
-      case _: LongType => numericValue.toLong
-      case _: FloatType => numericValue.toFloat
-      case _: DoubleType => numericValue
-      case _: BooleanType => cell.getBooleanCellValue
-      case _: DecimalType => if (cellType == CellType.STRING && cell.getStringCellValue == "") null else bigDecimal
-      case _: TimestampType =>
-        cellType match {
-          case CellType.NUMERIC => new Timestamp(DateUtil.getJavaDate(numericValue).getTime)
-          case _ => parseTimestamp(stringValue)
-        }
-      case _: DateType => new java.sql.Date(DateUtil.getJavaDate(numericValue).getTime)
-      case _: StringType => stringValue
-      case t => throw new RuntimeException(s"Unsupported cast from $cell to $t")
-    }
+    stringValue
   }
 
   private def parseTimestamp(stringValue: String): Timestamp = {
@@ -214,21 +229,34 @@ case class ExcelRelation(
 
   private def getSparkType(cell: Option[Cell]): DataType = {
     cell match {
-      case Some(c) =>
-        c.getCellTypeEnum match {
-          case CellType.FORMULA =>
-            c.getCachedFormulaResultTypeEnum match {
-              case CellType.STRING => StringType
-              case CellType.NUMERIC => DoubleType
-              case _ => NullType
+      case Some(c) => {
+        nulls match {
+          case Some(n) =>
+            if (n.contains(getStringValue(c))) {
+              NullType
+            } else {
+              getSparkType(c)
             }
-          case CellType.STRING if c.getStringCellValue == "" => NullType
-          case CellType.STRING => StringType
-          case CellType.BOOLEAN => BooleanType
-          case CellType.NUMERIC => if (DateUtil.isCellDateFormatted(c)) TimestampType else DoubleType
-          case CellType.BLANK => NullType
+          case None => getSparkType(c)
         }
+      }
       case None => NullType
+    }
+  }
+
+  private def getSparkType(c: Cell) = {
+    c.getCellTypeEnum match {
+      case CellType.FORMULA =>
+        c.getCachedFormulaResultTypeEnum match {
+          case CellType.STRING => StringType
+          case CellType.NUMERIC => DoubleType
+          case _ => NullType
+        }
+      case CellType.STRING if c.getStringCellValue == "" => NullType
+      case CellType.STRING => StringType
+      case CellType.BOOLEAN => BooleanType
+      case CellType.NUMERIC => if (DateUtil.isCellDateFormatted(c)) TimestampType else DoubleType
+      case CellType.BLANK => NullType
     }
   }
 
