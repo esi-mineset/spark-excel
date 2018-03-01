@@ -40,9 +40,9 @@ case class ExcelRelation(
   endRow: Option[Int] = None,
   nullValues: Option[String] = None
 )(@transient val sqlContext: SQLContext)
-    extends BaseRelation
-    with TableScan
-    with PrunedScan {
+  extends BaseRelation
+  with TableScan
+  with PrunedScan {
 
   private val path = new Path(location)
 
@@ -158,7 +158,7 @@ case class ExcelRelation(
     val rows = i2.map(row => lookups.map(l => l(row)))
 
     val result = rows.to[Vector]
-    val rdd = sqlContext.sparkContext.parallelize(result.map(Row.fromSeq))
+    val rdd = sqlContext.sparkContext.parallelize(result.map(Row.fromSeq), 1)
     workbook.close()
     rdd
   }
@@ -290,8 +290,8 @@ case class ExcelRelation(
   private def parallelize[T : scala.reflect.ClassTag](seq: Seq[T]): RDD[T] = sqlContext.sparkContext.parallelize(seq)
 
   /**
-    * Generates a header from the given row which is null-safe and duplicate-safe.
-    */
+   * Generates a header from the given row which is null-safe and duplicate-safe.
+   */
   protected def makeSafeHeader(row: Array[String]): Array[String] = {
     if (useHeader) {
       val duplicates = {
