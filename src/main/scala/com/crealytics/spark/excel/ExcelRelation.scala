@@ -221,7 +221,7 @@ case class ExcelRelation(
   private lazy val dataFormatter = new DataFormatter()
 
   private def getStringValue(cell: Cell) = {
-    cell.getCellTypeEnum match {
+    val sVal = cell.getCellTypeEnum match {
       case CellType.FORMULA =>
         cell.getCachedFormulaResultTypeEnum match {
           case CellType.STRING => cell.getRichStringCellValue.getString
@@ -230,6 +230,7 @@ case class ExcelRelation(
         }
       case _ => dataFormatter.formatCellValue(cell)
     }
+    sVal.filter(_ >= ' ')
   }
 
   private def getNumericValue(cell: Cell): Option[Double] = {
