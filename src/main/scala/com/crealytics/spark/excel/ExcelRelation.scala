@@ -40,9 +40,9 @@ case class ExcelRelation(
   endRow: Option[Int] = None,
   nullValues: Option[String] = None
 )(@transient val sqlContext: SQLContext)
-  extends BaseRelation
-  with TableScan
-  with PrunedScan {
+    extends BaseRelation
+    with TableScan
+    with PrunedScan {
 
   private val path = new Path(location)
 
@@ -235,13 +235,22 @@ case class ExcelRelation(
 
   private def getNumericValue(cell: Cell): Option[Double] = {
     cell.getCellTypeEnum match {
+      case CellType._NONE => None
       case CellType.NUMERIC => Some(cell.getNumericCellValue)
       case CellType.STRING => stringToDouble(cell.getStringCellValue)
       case CellType.FORMULA =>
         cell.getCachedFormulaResultTypeEnum match {
+          case CellType._NONE => None
           case CellType.NUMERIC => Some(cell.getNumericCellValue)
           case CellType.STRING => stringToDouble(cell.getRichStringCellValue.getString)
+          case CellType.FORMULA => None
+          case CellType.BLANK => None
+          case CellType.BOOLEAN => Some(if (cell.getBooleanCellValue) 1 else 0)
+          case CellType.ERROR => None
         }
+      case CellType.BLANK => None
+      case CellType.BOOLEAN => Some(if (cell.getBooleanCellValue) 1 else 0)
+      case CellType.ERROR => None
     }
   }
 
@@ -291,8 +300,8 @@ case class ExcelRelation(
   private def parallelize[T : scala.reflect.ClassTag](seq: Seq[T]): RDD[T] = sqlContext.sparkContext.parallelize(seq)
 
   /**
-   * Generates a header from the given row which is null-safe and duplicate-safe.
-   */
+    * Generates a header from the given row which is null-safe and duplicate-safe.
+    */
   protected def makeSafeHeader(row: Array[String]): Array[String] = {
     if (useHeader) {
       val duplicates = {
