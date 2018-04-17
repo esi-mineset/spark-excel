@@ -50,13 +50,8 @@ spAppendScalaVersion := true
 
 spIncludeMaven := true
 
-publishTo := {
-  val nexus = "https://oss.sonatype.org/"
-  if (version.value.endsWith("SNAPSHOT"))
-    Some("snapshots" at nexus + "content/repositories/snapshots")
-  else
-    Some("releases" at nexus + "service/local/staging/deploy/maven2")
-}
+publishTo := Some("Artifactory Realm" at "http://esi-components.esi-group.com/artifactory/tests")
+credentials += Credentials(Path.userHome / ".m2" / ".credentials")
 
 pomExtra :=
   <url>https://github.com/crealytics/spark-excel</url>
