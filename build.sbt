@@ -50,7 +50,7 @@ spAppendScalaVersion := true
 
 spIncludeMaven := true
 
-publishTo := Some("Artifactory Realm" at "http://esi-components.esi-group.com/artifactory/tests")
+publishTo := Some("Artifactory Realm" at "http://esi-components.esi-group.com/artifactory/snapshot")
 credentials += Credentials(Path.userHome / ".m2" / ".credentials")
 
 pomExtra :=
