@@ -136,13 +136,13 @@ class IntegrationSuite extends FunSpec with PropertyChecks with DataFrameSuiteBa
     }
 
     describe(s"with maxRowsInMemory = $maxRowsInMemory") {
-      it("parses known datatypes correctly") {
-        forAll(rowsGen, MinSuccessful(20)) { rows =>
-          val expected = spark.createDataset(rows).toDF
-          val actual = writeThenRead(expected)
-          assertDataFrameApproximateEquals(expected, actual, relTol = 1.0E-6)
-        }
-      }
+      //      it("parses known datatypes correctly") {
+      //        forAll(rowsGen, MinSuccessful(20)) { rows =>
+      //          val expected = spark.createDataset(rows).toDF
+      //          val actual = writeThenRead(expected)
+      //          assertDataFrameApproximateEquals(expected, actual, relTol = 1.0E-6)
+      //        }
+      //      }
 
       it("handles null values correctly") {
         forAll(rowsGen, MinSuccessful(20)) { rows =>
