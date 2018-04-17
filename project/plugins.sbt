@@ -1,4 +1,5 @@
-resolvers += Resolver.bintrayIvyRepo("s22s", "sbt-plugins")
+//resolvers += Resolver.bintrayIvyRepo("s22s", "sbt-plugins")
+resolvers += "Spark Packages Main repo" at "https://dl.bintray.com/spark-packages/maven"
 
 addSbtPlugin("org.spark-packages" % "sbt-spark-package" % "0.2.7-astraea.1")
 
